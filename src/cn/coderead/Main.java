@@ -6,4 +6,8 @@ package cn.coderead;
  * <p>作者: cws
  */
 public class Main {
+
+    public static void main(String[] args) {
+    }
+
 }
