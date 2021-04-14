@@ -677,7 +677,9 @@ public class ThreadPoolExecutor extends AbstractExecutorService {
     private void advanceRunState(int targetState) {
         for (;;) {
             int c = ctl.get();
+            // runStateAtLeast(c, targetState) == c>=SHUTDOWN,即：SHUTDOWN、STOP、TIDYING、TERMINATED
             if (runStateAtLeast(c, targetState) ||
+                // TODO 这个什么意思？
                 ctl.compareAndSet(c, ctlOf(targetState, workerCountOf(c))))
                 break;
         }
@@ -789,10 +791,24 @@ public class ThreadPoolExecutor extends AbstractExecutorService {
         final ReentrantLock mainLock = this.mainLock;
         mainLock.lock();
         try {
+            // 使用interrupt()方法中断所有的workers
             for (Worker w : workers) {
                 Thread t = w.thread;
+                // 查询中断标志位(不改变中断标志位)，返回false
                 if (!t.isInterrupted() && w.tryLock()) {
                     try {
+                        /**
+                         * --interrupt()方法并不是中断线程，而是中断阻塞状态，或者将线程的[中断标志位]置为true。
+                         *
+                         * --对于未阻塞的线程，interrupt()只是造成[中断标志位]=true，线程本身运行状态不受影响。
+                         *
+                         * --对于阻塞的线程，interrupt()会中断阻塞状态，使其转换成非阻塞状态，并清除[中断标志位]。
+                         *
+                         * --造成阻塞状态的情况有：sleep()、wait()和join()。
+                         *
+                         * --阻塞状态的线程被中断时，只是中断了阻塞状态，即sleep()、wait()和join()，线程本身还在继续运行。
+                         */
+                        // TODO 将中断标志设置为true，下次运行开始中断？
                         t.interrupt();
                     } catch (SecurityException ignore) {
                     } finally {
@@ -1169,12 +1185,27 @@ public class ThreadPoolExecutor extends AbstractExecutorService {
         w.unlock(); // allow interrupts
         boolean completedAbruptly = true;
         try {
+            /**
+             *  1.worker是一开始worker数量小于corePool的情况下新建的，此时worker自带task,(w.firstTask=task)!=null
+             *
+             *  2.工作者数量达到corePoolSzie后，worker不再增加，task被放入阻塞队列中.
+             *  worker任务完成后(无论是firstTask还是从workQueue中取出来的任务)，回去workQueue中取任务来执行
+             *
+             *  3.worker一开始被限制为corePoolSize大小，而task不断增加,
+             *  当任务增加到(corePoolSize+blockQueue.size)之后，可以理解为大小为corePoolSize的worker处理不过来了
+             *
+             *  4.因此需要增加worker，增加(maxPoolSize-corePoolSize)个worker，
+             *  同时worker依旧遵循先执行firstTask再执行workQueue的传统。
+             *
+             *  5.假设任务不再增加，maxPoolSize个worker会一直处理task直到workQueue没有任务了(不是任务数量少于某个值)，
+             *  才消减worker数量。逻辑是：取不到任务后，跳出while，利用processWorkerExit()方法减少worker。
+             *
+             *  6.processWorkerExit的逻辑是：worker数量比corePoolSize大，安全地(锁)把worker移除队列，
+             *  如果删多了，补充一个worker(firstTask:null,corePoolSize:false)。
+             */
             // task != null 则立即执行task
             // getTask：从workQueue中获取任务，直到获取到第一个不超时的任务
-            // TODO Worker和task什么关系？ 初始一对一的关系，后续多对少：
-            // 1.worker是corePool和maxPool情况下新建的，那么task被放入workerQueue中。
-            // 2.task被放入阻塞队列中，那么这里task=getTask()，相当于将workerQueue拿出来执行
-            // 3.task执行后，worker继续从workerQueue中获取task，此时worker比task多
+            // Worker（工作者）和task什么关系？ 初始一对一的关系，后续少对多
             while (task != null || (task = getTask()) != null) {
                 // TODO 为什么w要继承aqs直接用acquire(1)，而不是新建一个Reentrylock?
                 w.lock();
@@ -1435,7 +1466,7 @@ public class ThreadPoolExecutor extends AbstractExecutorService {
                 return;
             c = ctl.get();
         }
-        // 2.将任务放入等待队列BlockingQueue<Runnable>中
+        // 2.将任务放入等待队列BlockingQueue<Runnable>中。正常情况下不产生worker。
         if (isRunning(c) && workQueue.offer(command)) {
             int recheck = ctl.get();// 获取线程池的状态，-1表示正在运行
             // 线程池正常运行时，recheck=-1,isRunning返回true,因此不会进入这个分支
@@ -1448,8 +1479,8 @@ public class ThreadPoolExecutor extends AbstractExecutorService {
             else if (workerCountOf(recheck) == 0) //
                 addWorker(null, false);
         }
-        // 3.
-        // TODO 当queue加满了之后，会直接执行吗？
+        // 3.当BlockingQueue<Runnable>放满任务之后，workQueue.offer返回false
+        // 新增worker数量至maxPoolSize,即原有10个worker,新增20个至30个worker(maxPoolSize)
         else if (!addWorker(command, false))
             reject(command);
     }
@@ -1471,6 +1502,7 @@ public class ThreadPoolExecutor extends AbstractExecutorService {
         try {
             checkShutdownAccess();
             advanceRunState(SHUTDOWN);
+            // for循环workers,中断线程
             interruptIdleWorkers();
             onShutdown(); // hook for ScheduledThreadPoolExecutor
         } finally {
