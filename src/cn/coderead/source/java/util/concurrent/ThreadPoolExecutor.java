@@ -379,15 +379,33 @@ public class ThreadPoolExecutor extends AbstractExecutorService {
      * below).
      */
     private final AtomicInteger ctl = new AtomicInteger(ctlOf(RUNNING, 0));
-    private static final int COUNT_BITS = Integer.SIZE - 3;
-    private static final int CAPACITY   = (1 << COUNT_BITS) - 1;
+    private static final int COUNT_BITS = Integer.SIZE - 3;         // 00000000000000000000000000011101
+    /**
+     *  最大容量（2^29 - 1）
+     */
+    private static final int CAPACITY   = (1 << COUNT_BITS) - 1;    // 00011111111111111111111111111111
 
     // runState is stored in the high-order bits
-    private static final int RUNNING    = -1 << COUNT_BITS;
-    private static final int SHUTDOWN   =  0 << COUNT_BITS;
-    private static final int STOP       =  1 << COUNT_BITS;
-    private static final int TIDYING    =  2 << COUNT_BITS;
-    private static final int TERMINATED =  3 << COUNT_BITS;
+    /**
+     * 	接受新的任务并且执行列队的任务
+     */
+    private static final int RUNNING    = -1 << COUNT_BITS; // 11100000000000000000000000000000
+    /**
+     * 	不接受新的任务但是执行列队的任务
+     */
+    private static final int SHUTDOWN   =  0 << COUNT_BITS; // 00000000000000000000000000000000
+    /**
+     * 不接收新任务，不执行列队任务，并且中断正在执行的任务
+     */
+    private static final int STOP       =  1 << COUNT_BITS; // 00100000000000000000000000000000
+    /**
+     * 所有的任务已经终结，workCount变量为0,转变为TIDYINGZ状态的线程将会执行terminated()的钩子方法。
+     */
+    private static final int TIDYING    =  2 << COUNT_BITS; // 01000000000000000000000000000000
+    /**
+     * terminated() 已经完成
+     */
+    private static final int TERMINATED =  3 << COUNT_BITS; // 1100000000000000000000000000000
 
     // Packing and unpacking ctl
     private static int runStateOf(int c)     { return c & ~CAPACITY; }
@@ -656,6 +674,19 @@ public class ThreadPoolExecutor extends AbstractExecutorService {
             Thread t;
             if (getState() >= 0 && (t = thread) != null && !t.isInterrupted()) {
                 try {
+                    /**
+                     * --interrupt()方法并不是中断线程，而是中断阻塞状态，或者将线程的[中断标志位]置为true。
+                     *
+                     * --对于未阻塞的线程，interrupt()只是造成[中断标志位]=true，线程本身运行状态不受影响。
+                     *
+                     * --对于阻塞的线程，interrupt()会中断阻塞状态，使其转换成非阻塞状态，即，将线程的中断标志位置为false，并抛出异常。
+                     *
+                     * --造成阻塞状态的情况有：sleep()、wait()、join()和worker的workerQueue.poll()。
+                     *
+                     * --阻塞状态的线程被中断时，只是中断了阻塞状态，即sleep()、wait()和join()，线程本身还在继续运行。
+                     */
+                    // 将中断标志设置为true，并不强制线程立刻终止
+                    // 当中断标志为true时，workerQueue.poll会立刻（队列中无论有没有值）抛出interrupt错误
                     t.interrupt();
                 } catch (SecurityException ignore) {
                 }
@@ -679,7 +710,10 @@ public class ThreadPoolExecutor extends AbstractExecutorService {
             int c = ctl.get();
             // runStateAtLeast(c, targetState) == c>=SHUTDOWN,即：SHUTDOWN、STOP、TIDYING、TERMINATED
             if (runStateAtLeast(c, targetState) ||
-                // TODO 这个什么意思？
+                // ctlOf(targetState, workerCountOf(c)) = STOP | worker数量 = 00100000000000000000000000000000
+                // 比如worker数量为10，转化为二进制是1010，ctlOf(targetState, workerCountOf(c)) = STOP | 10 =
+                // 100000000000000000000000000000 | 1010 = 100000000000000000000000001010
+                // 这一步就是为了给workCount高三位赋指定状态的值，如果是STOP,那么赋值就是001
                 ctl.compareAndSet(c, ctlOf(targetState, workerCountOf(c))))
                 break;
         }
@@ -794,7 +828,9 @@ public class ThreadPoolExecutor extends AbstractExecutorService {
             // 使用interrupt()方法中断所有的workers
             for (Worker w : workers) {
                 Thread t = w.thread;
-                // 查询中断标志位(不改变中断标志位)，返回false
+                // 查询中断标志位(不改变中断标志位)并获取锁
+                // 1.线程t原本是阻塞状态，那么利用t.interrupt()这个只会将线程1唤醒，并设置中断标志false
+                // 2.线程t原本是非阻塞状态，设置中断标志为true
                 if (!t.isInterrupted() && w.tryLock()) {
                     try {
                         /**
@@ -802,13 +838,14 @@ public class ThreadPoolExecutor extends AbstractExecutorService {
                          *
                          * --对于未阻塞的线程，interrupt()只是造成[中断标志位]=true，线程本身运行状态不受影响。
                          *
-                         * --对于阻塞的线程，interrupt()会中断阻塞状态，使其转换成非阻塞状态，并清除[中断标志位]。
+                         * --对于阻塞的线程，interrupt()会中断阻塞状态，使其转换成非阻塞状态，即，将线程的中断标志位置为false，并抛出异常。
                          *
-                         * --造成阻塞状态的情况有：sleep()、wait()和join()。
+                         * --造成阻塞状态的情况有：sleep()、wait()、join()和worker的workerQueue.poll()。
                          *
                          * --阻塞状态的线程被中断时，只是中断了阻塞状态，即sleep()、wait()和join()，线程本身还在继续运行。
                          */
-                        // TODO 将中断标志设置为true，下次运行开始中断？
+                        // 将中断标志设置为true，并不强制线程立刻终止
+                        // 当中断标志为true时，workerQueue.poll会立刻（队列中无论有没有值）抛出interrupt错误
                         t.interrupt();
                     } catch (SecurityException ignore) {
                     } finally {
@@ -959,7 +996,7 @@ public class ThreadPoolExecutor extends AbstractExecutorService {
             if (t != null) {
                 // 所有线程在新增的时候公用一把非公平锁
                 final ReentrantLock mainLock = this.mainLock;
-                // TODO 使用非公平锁的含义是：保障worker能够单线程地入队。
+                // 使用非公平锁的含义是：保障worker能够单线程地入队。
                 // 同时，非公平锁能够保证
                 mainLock.lock();
 
@@ -1113,11 +1150,11 @@ public class ThreadPoolExecutor extends AbstractExecutorService {
                     return null;
                 continue;
             }
-
+            // 捕捉Interrupted异常:当worker在获取任务时，线程池被shutdown,
+            // 那么该worker会抛出中断异常来阻止自己再获取任务
             try {
                 // 从工作队列中获取并移除头结点，允许超时
                 // 什么情况下r==null? 队列poll超时，即workQueue没有数据
-                // TODO 什么情况下c有值，workQueue却没有数据？
                 //　　poll(long timeout, TimeUnit unit)：从BlockingQueue取出一个队首的对象，如果在指定时间内，
                 //　　　　队列一旦有数据可取，则立即返回队列中的数据。否则知道时间超时还没有数据可取，返回失败。
                 //　　take():取走BlockingQueue里排在首位的对象,若BlockingQueue为空,阻断进入等待状态直到
@@ -1500,10 +1537,13 @@ public class ThreadPoolExecutor extends AbstractExecutorService {
         final ReentrantLock mainLock = this.mainLock;
         mainLock.lock();
         try {
+            // 检查 shutdown 权限
             checkShutdownAccess();
+            // 设置线程池控制状态为SHUTDOWN
             advanceRunState(SHUTDOWN);
-            // for循环workers,中断线程
+            // 中断线程
             interruptIdleWorkers();
+            // shutdownNow会额外移除workQueue队列
             onShutdown(); // hook for ScheduledThreadPoolExecutor
         } finally {
             mainLock.unlock();
@@ -1533,9 +1573,13 @@ public class ThreadPoolExecutor extends AbstractExecutorService {
         final ReentrantLock mainLock = this.mainLock;
         mainLock.lock();
         try {
+            // 检查 shutdownNow 权限
             checkShutdownAccess();
+            // 设置 ctl 状态为STOP
             advanceRunState(STOP);
+            // 中断worker线程
             interruptWorkers();
+            // 移除等待队列并返回
             tasks = drainQueue();
         } finally {
             mainLock.unlock();

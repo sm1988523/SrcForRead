@@ -1402,8 +1402,12 @@ public class ForkJoinPool extends AbstractExecutorService {
      */
     private int lockRunState() {
         int rs;
+        // rs|=RSLOCK => rs=rs|RSLOCK
         return ((((rs = runState) & RSLOCK) != 0 ||
+                // 第一次：RUNSTATE.cas(0->1)，第二次：4->5
                  !U.compareAndSwapInt(this, RUNSTATE, rs, rs |= RSLOCK)) ?
+                // cas成功，返回rs；失败，await
+                // TODO
                 awaitRunStateLock() : rs);
     }
 
@@ -2327,24 +2331,29 @@ public class ForkJoinPool extends AbstractExecutorService {
                 tryTerminate(false, false);     // help terminate
                 throw new RejectedExecutionException();
             }
+            // 1.初始化 rs=runState = 0
             else if ((rs & STARTED) == 0 ||     // initialize
                      ((ws = workQueues) == null || (m = ws.length - 1) < 0)) {
                 int ns = 0;
-                rs = lockRunState();
+                rs = lockRunState(); // 返回1
                 try {
-                    if ((rs & STARTED) == 0) {
+                    if ((rs & STARTED) == 0) { // 1&(1<<2)
                         U.compareAndSwapObject(this, STEALCOUNTER, null,
-                                               new AtomicLong());
+                                               new AtomicLong()); // 初始化STEALCOUNTER
                         // create workQueues array with size a power of two
                         int p = config & SMASK; // ensure at least 2 slots
                         int n = (p > 1) ? p - 1 : 1;
-                        n |= n >>> 1; n |= n >>> 2;  n |= n >>> 4;
+                        // n= 1|0(1>>>1)=1;n=1|0(1>>>2)=1;n=1|0=1
+                        n |= n >>> 1; n |= n >>> 2;  n |= n >>> 4; // >>>：无符号右移
+                        // n= 1|0 =1;n=1|0=1;n=(1+1)<<1=4
                         n |= n >>> 8; n |= n >>> 16; n = (n + 1) << 1;
-                        workQueues = new WorkQueue[n];
-                        ns = STARTED;
+                        workQueues = new WorkQueue[n];// workQueues = new WorkQueue[4]
+                        ns = STARTED; // ns=4
                     }
                 } finally {
-                    unlockRunState(rs, (rs & ~RSLOCK) | ns);
+                    // TODO
+                    // (1&11111111111111111111111111111110)|4= 0|4 = rs = 4
+                    unlockRunState(rs, (rs & ~RSLOCK) | ns); //runState=4
                 }
             }
             else if ((q = ws[k = r & m & SQMASK]) != null) {
@@ -2370,14 +2379,18 @@ public class ForkJoinPool extends AbstractExecutorService {
                 }
                 move = true;                   // move on failure
             }
+            // 2.初始化之后，创建新queue. rs=4
+            // TODO rs=5之后，如何跳出循环
             else if (((rs = runState) & RSLOCK) == 0) { // create new queue
                 q = new WorkQueue(this, null);
-                q.hint = r;
-                q.config = k | SHARED_QUEUE;
-                q.scanState = INACTIVE;
+                q.hint = r; // ThreadLocalRandom.getProbe()
+                q.config = k | SHARED_QUEUE; // -2147483648，0 | 10000000000000000000000000000000(必须是负数)
+                q.scanState = INACTIVE; // 1 << 31
+                // rs=5
                 rs = lockRunState();           // publish index
                 if (rs > 0 &&  (ws = workQueues) != null &&
                     k < ws.length && ws[k] == null)
+                    // ws[0]=new WorkQueue(this,null)
                     ws[k] = q;                 // else terminated
                 unlockRunState(rs, rs & ~RSLOCK);
             }
@@ -2399,7 +2412,11 @@ public class ForkJoinPool extends AbstractExecutorService {
     final void externalPush(ForkJoinTask<?> task) {
         WorkQueue[] ws; WorkQueue q; int m;
         int r = ThreadLocalRandom.getProbe();
+        // 初始为0
         int rs = runState;
+        // workQueues!=null && workQueues.length-1>=0
+        // workQueues[workQueues.length&r(随机数)&0x007e]!=null
+        // r!=0 && runState>0 && QLOCK:0->1
         if ((ws = workQueues) != null && (m = (ws.length - 1)) >= 0 &&
             (q = ws[m & r & SQMASK]) != null && r != 0 && rs > 0 &&
             U.compareAndSwapInt(q, QLOCK, 0, 1)) {
