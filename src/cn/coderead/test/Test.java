@@ -1,6 +1,7 @@
 package cn.coderead.test;
 
 
+import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.atomic.LongAdder;
 
 /**
@@ -10,8 +11,7 @@ import java.util.concurrent.atomic.LongAdder;
  */
 public class Test {
     public static void main(String[] args) {
-        LongAdder adder = new LongAdder();
-        adder.add(3);
-        System.out.println(adder.intValue());
+        ForkJoinPool fjp = new ForkJoinPool();
+        fjp.execute(()-> System.out.println("hello world!"));
     }
 }

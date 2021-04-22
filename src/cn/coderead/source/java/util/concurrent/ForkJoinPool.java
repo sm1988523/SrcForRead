@@ -879,7 +879,8 @@ public class ForkJoinPool extends AbstractExecutorService {
          */
         final ForkJoinTask<?>[] growArray() {
             ForkJoinTask<?>[] oldA = array;
-            int size = oldA != null ? oldA.length << 1 : INITIAL_QUEUE_CAPACITY;
+            // initial: 1<<13
+            int size = oldA != null ? oldA.length << 1 : INITIAL_QUEUE_CAPACITY; // 1<<13 8192
             if (size > MAXIMUM_QUEUE_CAPACITY)
                 throw new RejectedExecutionException("Queue capacity exceeded");
             int oldMask, t, b;
@@ -1482,11 +1483,15 @@ public class ForkJoinPool extends AbstractExecutorService {
      * @return true if successful
      */
     private boolean createWorker() {
+        // DefaultForkJoinWorkerThreadFactory = new ForkJoinWorkerThread(pool)
+        // registerWorker(ForkJoinWorkerThread wt)
         ForkJoinWorkerThreadFactory fac = factory;
         Throwable ex = null;
         ForkJoinWorkerThread wt = null;
         try {
+            // 新建Thread
             if (fac != null && (wt = fac.newThread(this)) != null) {
+                // TODO wt.start，即wt.run()
                 wt.start();
                 return true;
             }
@@ -1505,11 +1510,15 @@ public class ForkJoinPool extends AbstractExecutorService {
      * idle workers.  On CAS failure, c is refreshed and retried if
      * this holds (otherwise, a new worker is not needed).
      */
+    /**
+     * 增加ctl计数，尝试添加一个worker，依赖createWorker在失败时退出。
+     *
+     * @param c 传入ctl的值，此时total是负数并且没有工作线程。如果CAS失败，c会刷新并且重试（否则，不会新建worker）
+     */
     private void tryAddWorker(long c) {
         boolean add = false;
         do {
-            long nc = ((AC_MASK & (c + AC_UNIT)) |
-                       (TC_MASK & (c + TC_UNIT)));
+            long nc = ((AC_MASK & (c + AC_UNIT)) | (TC_MASK & (c + TC_UNIT)));
             if (ctl == c) {
                 int rs, stop;                 // check if terminating
                 if ((stop = (rs = lockRunState()) & STOP) == 0)
@@ -1539,15 +1548,16 @@ public class ForkJoinPool extends AbstractExecutorService {
             wt.setUncaughtExceptionHandler(handler);
         WorkQueue w = new WorkQueue(this, wt);
         int i = 0;                                    // assign a pool index
-        int mode = config & MODE_MASK;
-        int rs = lockRunState();
+        int mode = config & MODE_MASK; // 0
+        int rs = lockRunState(); // init:5
         try {
             WorkQueue[] ws; int n;                    // skip if no array
             if ((ws = workQueues) != null && (n = ws.length) > 0) {
-                int s = indexSeed += SEED_INCREMENT;  // unlikely to collide
-                int m = n - 1;
-                i = ((s << 1) | 1) & m;               // odd-numbered indices
-                if (ws[i] != null) {                  // collision
+                int s = indexSeed += SEED_INCREMENT;  // unlikely to collide（不太可能相撞）
+                int m = n - 1;                        // 7
+                i = ((s << 1) | 1) & m;               // 3，odd-numbered indices（奇数索引）
+                // TODO 第一次没有发生碰撞，碰撞后做些什么
+                if (ws[i] != null) {                  // collision（碰撞）
                     int probes = 0;                   // step by approx half n
                     int step = (n <= 4) ? 2 : ((n >>> 1) & EVENMASK) + 2;
                     while (ws[i = (i + step) & m] != null) {
@@ -1561,7 +1571,7 @@ public class ForkJoinPool extends AbstractExecutorService {
                 w.hint = s;                           // use as random seed
                 w.config = i | mode;
                 w.scanState = i;                      // publication fence
-                ws[i] = w;
+                ws[i] = w; // w[3]=w
             }
         } finally {
             unlockRunState(rs, rs & ~RSLOCK);
@@ -1633,6 +1643,7 @@ public class ForkJoinPool extends AbstractExecutorService {
     final void signalWork(WorkQueue[] ws, WorkQueue q) {
         long c; int sp, i; WorkQueue v; Thread p;
         while ((c = ctl) < 0L) {                       // too few active
+            // 初始化(int)c=0，c=-8...........
             if ((sp = (int)c) == 0) {                  // no idle workers
                 if ((c & ADD_WORKER) != 0L)            // too few workers
                     tryAddWorker(c);
@@ -2322,7 +2333,7 @@ public class ForkJoinPool extends AbstractExecutorService {
         int r;                                    // initialize caller's probe
         if ((r = ThreadLocalRandom.getProbe()) == 0) {
             ThreadLocalRandom.localInit();
-            r = ThreadLocalRandom.getProbe();
+            r = ThreadLocalRandom.getProbe();// r=0x9e3779b9
         }
         for (;;) {
             WorkQueue[] ws; WorkQueue q; int rs, m, k;
@@ -2342,10 +2353,10 @@ public class ForkJoinPool extends AbstractExecutorService {
                                                new AtomicLong()); // 初始化STEALCOUNTER
                         // create workQueues array with size a power of two
                         int p = config & SMASK; // ensure at least 2 slots
-                        int n = (p > 1) ? p - 1 : 1;
-                        // n= 1|0(1>>>1)=1;n=1|0(1>>>2)=1;n=1|0=1
+                        int n = (p > 1) ? p - 1 : 1; // 3
+                        // n= 3|0(3>>>1)=3;n=3|0(3>>>2)=3;n=3|0=3
                         n |= n >>> 1; n |= n >>> 2;  n |= n >>> 4; // >>>：无符号右移
-                        // n= 1|0 =1;n=1|0=1;n=(1+1)<<1=4
+                        // n= 3|0 =3;n=3|0=3;n=(3+1)<<1=8
                         n |= n >>> 8; n |= n >>> 16; n = (n + 1) << 1;
                         workQueues = new WorkQueue[n];// workQueues = new WorkQueue[4]
                         ns = STARTED; // ns=4
@@ -2356,17 +2367,22 @@ public class ForkJoinPool extends AbstractExecutorService {
                     unlockRunState(rs, (rs & ~RSLOCK) | ns); //runState=4
                 }
             }
+            // 初始化 r=0x9e3779b9,m=0111,SQMASK=1110 等价于 ....001&0111&1110 = 0
             else if ((q = ws[k = r & m & SQMASK]) != null) {
                 if (q.qlock == 0 && U.compareAndSwapInt(q, QLOCK, 0, 1)) {
-                    ForkJoinTask<?>[] a = q.array;
-                    int s = q.top;
+                    ForkJoinTask<?>[] a = q.array; // 初始化 a = null
+                    int s = q.top; // 1 << 12
                     boolean submitted = false; // initial submission or resizing
                     try {                      // locked version of push
                         if ((a != null && a.length > s + 1 - q.base) ||
-                            (a = q.growArray()) != null) {
+                            (a = q.growArray()) != null) { // 初始化a:ForkJoinTask[8192];
+                            // a.length : 1<<13-1 ，s : 1<<12，ASHIFT : 2，ABASE : 16
+                            // j = 4096 << 2 + 16= 16400
                             int j = (((a.length - 1) & s) << ASHIFT) + ABASE;
-                            U.putOrderedObject(a, j, task);
-                            U.putOrderedInt(q, QTOP, s + 1);
+                            // TODO ForkTask[4096]=task，是为什么？
+                            // ForkTask[4096]=task
+                            U.putOrderedObject(a, j, task); //U.putOrderedObject(ForkTask[8192], 16400, task) ==> ForkTask[4096]=task
+                            U.putOrderedInt(q, QTOP, s + 1); //U.putOrderedInt(q, 168, 4097) ==> q.top=4097(4096+1)
                             submitted = true;
                         }
                     } finally {
@@ -2380,7 +2396,6 @@ public class ForkJoinPool extends AbstractExecutorService {
                 move = true;                   // move on failure
             }
             // 2.初始化之后，创建新queue. rs=4
-            // TODO rs=5之后，如何跳出循环
             else if (((rs = runState) & RSLOCK) == 0) { // create new queue
                 q = new WorkQueue(this, null);
                 q.hint = r; // ThreadLocalRandom.getProbe()
@@ -2392,7 +2407,7 @@ public class ForkJoinPool extends AbstractExecutorService {
                     k < ws.length && ws[k] == null)
                     // ws[0]=new WorkQueue(this,null)
                     ws[k] = q;                 // else terminated
-                unlockRunState(rs, rs & ~RSLOCK);
+                unlockRunState(rs, rs & ~RSLOCK); // rs:5->4
             }
             else
                 move = true;                   // move if busy
