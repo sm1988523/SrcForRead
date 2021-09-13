@@ -170,6 +170,10 @@ public class LockSupport {
      * @since 1.6
      */
     public static void park(Object blocker) {
+        // 和sleep、await区别：
+        // 1.sleep和park都不释放锁资源，sleep需要带时间，park不需要
+        // 2.await会释放锁资源，且需要使用notify唤醒（不能精确）
+        // 3.park可以被unpark精确唤醒
         Thread t = Thread.currentThread();
         setBlocker(t, blocker);
         UNSAFE.park(false, 0L);
