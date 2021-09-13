@@ -432,6 +432,26 @@ public class CopyOnWriteArrayList<E>
      * @return {@code true} (as specified by {@link Collection#add})
      */
     public boolean add(E e) {
+
+        // --------------原理------------------------
+        // 1. 获取内置的非公平锁（同一线程可在锁住期间进入）
+        // 2. 获取原array[]，同时新建array[(size+1)]
+        // 3. 将e放入新array[],并替换掉原array[]
+        // 4. 释放锁
+        // -----------------------------------------
+
+        // --------------疑问&解答--------------------
+        // 问：既然用了锁，保证add时是线程安全的，为什么不直接像arrayList一样：扩容1.5倍，然后用add方法呢？
+        // 答：为了遍历的安全。“快照”样式的迭代器方法在创建迭代器时使用对数组状态的引用。
+        // 此数组在迭代器的生命周期内永不更改，因此不可能发生干扰，并且保证迭代器不会引发ConcurrentModificationException。
+        // -----------------------------------------
+
+        // --------------应用------------------------
+        // 如果在并发场景下写很多，那么建议用Collections.synchronizedList。
+        // Collections.synchronizedList的写操作性能比CopyOnWriteArrayList在多线程操作的情况下要好很多，
+        // 而读操作因为是采用了synchronized关键字的方式，其读操作性能并不如CopyOnWriteArrayList。
+        // -----------------------------------------
+
         final ReentrantLock lock = this.lock;
         lock.lock();
         try {

@@ -681,8 +681,37 @@ public class ConcurrentHashMap<K,V> extends AbstractMap<K,V>
      * to incorporate impact of the highest bits that would otherwise
      * never be used in index calculations because of table bounds.
      */
+
+    /**
+     * key对应的hashCode与其hashCode右移16位的结果进行异或操作。
+     * 此处，将高16位与低16位进行异或的操作称之为扰动函数，
+     * 目的是将高位的特征融入到低位之中，降低哈希冲突的概率。
+     *
+     * 此外，ConcurrentHashMap中经过扰乱函数处理之后，
+     * 需要与HASH_BITS做与运算，HASH_BITS为0x7ffffff，
+     * 即只有最高位为0，这样运算的结果使hashCode永远为正数。
+     * 在ConcurrentHashMap中，预定义了几个特殊节点的hashCode，
+     * 如：MOVED、TREEBIN、RESERVED，它们的hashCode均定义为负值。
+     * 因此，将普通节点的hashCode限定为正数，也就是为了防止与这些特殊节点的hashCode产生冲突。
+     */
     static final int spread(int h) {
         return (h ^ (h >>> 16)) & HASH_BITS;
+        /**
+         * 举个列子：
+         * hashCode(key1) = 0000 0000 0000 1111 0000 0000 0000 0010
+         * hashCode(key2) = 0000 0000 0000 0000 0000 0000 0000 0010
+         *
+         * 扰动函数处理后：
+         *
+         * hashCode(key1) ^ (hashCode(key1) >>> 16)
+         * 0000 0000 0000 1111 0000 0000 0000 1101
+         *
+         * hashCode(key2) ^ (hashCode(key2) >>> 16)
+         * 0000 0000 0000 0000 0000 0000 0000 0010
+         *
+         * 这种增益会随着HashMap容量的减少而增加，当HashMap的容量为2^9时，
+         * 使用扰动函数可以减少10%的碰撞，可见扰动函数的必要性。
+         */
     }
 
     /**
@@ -1030,7 +1059,7 @@ public class ConcurrentHashMap<K,V> extends AbstractMap<K,V>
                 // 判断是否可以建表
                 // 1.无法建表的线程让出时间片等待。
                 // 2.cas成功的建表，需要用到临时变量
-                tab = initTable();  // 初始化
+                tab = initTable();  // 初始化,这里是懒加载模式，new HashMap时并未初始化
             else if ((f = tabAt(tab, i = (n - 1) & hash)) == null) { // 经过hash过后的i,在tab[i]中没有放入过值，那么直接放入
                 if (casTabAt(tab, i, null,
                              new Node<K,V>(hash, key, value, null)))
@@ -2515,7 +2544,13 @@ public class ConcurrentHashMap<K,V> extends AbstractMap<K,V>
                             //             4. b=0,runBit=0,lastRun=[4] 5.b=1,runBit=1,lastRun=p[5]
                             //             6. b=1 7. b=1
                             // 最后：lastRun=p[5],runBit=1
-                            // TODO 为什么要用这种方式，两次遍历，而不是用下面的for循环一次遍历
+                            /**
+                              * 为什么要用这种方式，两次遍历，而不是用下面的for循环一次遍历:
+                              * for循环一次是JDK1.7使用的方式，为了避免之前版本中并发扩容所导致的死链问题，
+                             *  引入了高低位链表辅助进行扩容操作。先遍历完列表，最后再放入到哈希桶中对应的位置，
+                             *  之前是每遍历一个就放入桶中.
+                             **/
+
                             for (Node<K,V> p = f.next; p != null; p = p.next) {
                                 int b = p.hash & n;
                                 if (b != runBit) {
