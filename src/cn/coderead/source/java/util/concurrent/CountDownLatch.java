@@ -169,6 +169,7 @@ public class CountDownLatch {
             return getState();
         }
 
+        // 返回1表示无需阻塞
         protected int tryAcquireShared(int acquires) {
             return (getState() == 0) ? 1 : -1;
         }
@@ -228,6 +229,12 @@ public class CountDownLatch {
      *         while waiting
      */
     public void await() throws InterruptedException {
+        /**
+         * 1.新增node(NODE.SHARED),进入CLH队列
+         * 2.判断是否可以继续执行(state==0)
+         * 3.不能执行则修改状态为NODE.SIGNAL,并阻塞
+         * 4.等待唤醒
+         */
         sync.acquireSharedInterruptibly(1);
     }
 
@@ -288,6 +295,10 @@ public class CountDownLatch {
      * <p>If the current count equals zero then nothing happens.
      */
     public void countDown() {
+        /**
+         * 1.cas(state,state-1)
+         * 2.如果state==0，开始唤醒阻塞队列
+         */
         sync.releaseShared(1);
     }
 

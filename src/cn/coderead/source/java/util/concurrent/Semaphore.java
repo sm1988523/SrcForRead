@@ -360,6 +360,7 @@ public class Semaphore implements java.io.Serializable {
      *         otherwise
      */
     public boolean tryAcquire() {
+        // state=state-1;
         return sync.nonfairTryAcquireShared(1) >= 0;
     }
 

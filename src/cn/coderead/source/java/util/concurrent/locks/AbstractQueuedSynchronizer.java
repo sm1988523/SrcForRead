@@ -618,6 +618,8 @@ public abstract class AbstractQueuedSynchronizer
             }
         }
         // 初始化队列：new Node()-> node1 -> node2 -> ...
+        // 之所以要加new Node()，是因为enq逻辑是要阻塞自己
+        // 存在一个new Node()，是执行是存在一个活的线程
         enq(node);
         return node;
     }
@@ -688,11 +690,13 @@ public abstract class AbstractQueuedSynchronizer
             Node h = head;
             if (h != null && h != tail) {
                 int ws = h.waitStatus;
+                // 节点状态为SIGNAL：唤醒
                 if (ws == Node.SIGNAL) {
                     if (!compareAndSetWaitStatus(h, Node.SIGNAL, 0))
                         continue;            // loop to recheck cases
                     unparkSuccessor(h);
                 }
+                // 节点状态为0，设置成PROPAGATE
                 else if (ws == 0 &&
                          !compareAndSetWaitStatus(h, 0, Node.PROPAGATE))
                     continue;                // loop on failed CAS
@@ -729,6 +733,7 @@ public abstract class AbstractQueuedSynchronizer
          * racing acquires/releases, so most need signals now or soon
          * anyway.
          */
+        // CountDownLatch会传入propagate为1
         if (propagate > 0 || h == null || h.waitStatus < 0 ||
             (h = head) == null || h.waitStatus < 0) {
             Node s = node.next;
@@ -998,12 +1003,14 @@ public abstract class AbstractQueuedSynchronizer
                 if (p == head) {
                     int r = tryAcquireShared(arg);
                     if (r >= 0) {
+                        // 跳出await
                         setHeadAndPropagate(node, r);
                         p.next = null; // help GC
                         failed = false;
                         return;
                     }
                 }
+                // 第一遍将0状态改为SIGNAL，第二遍阻塞线程(不释放锁资源)
                 if (shouldParkAfterFailedAcquire(p, node) &&
                     parkAndCheckInterrupt())
                     throw new InterruptedException();
@@ -1313,6 +1320,7 @@ public abstract class AbstractQueuedSynchronizer
             throws InterruptedException {
         if (Thread.interrupted())
             throw new InterruptedException();
+        // (getState() == 0) ? 1 : -1 ，CountDownLatch初始化指定的state被消耗完了，继续执行不再阻塞
         if (tryAcquireShared(arg) < 0)
             doAcquireSharedInterruptibly(arg);
     }
@@ -1351,6 +1359,7 @@ public abstract class AbstractQueuedSynchronizer
      * @return the value returned from {@link #tryReleaseShared}
      */
     public final boolean releaseShared(int arg) {
+        // 如果是最后一个释放state==0,则释放所有的
         if (tryReleaseShared(arg)) {
             doReleaseShared();
             return true;
